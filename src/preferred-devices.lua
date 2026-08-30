@@ -16,6 +16,7 @@
 
 log = Log.open_topic ("s-preferred-devices")
 cutils = require ("common-utils")
+futils = require ("filter-utils")
 
 state = State ("audio-preferred-devices")
 st = state:load ()
@@ -194,7 +195,9 @@ SimpleEventHook {
     for _, want in ipairs (Json.Raw (wanted):parse ()) do
       for p in device:iterate_params ("EnumProfile") do
         local profile = cutils.parseParam (p, "EnumProfile")
-        if profile and profile.name == want then
+        -- available ~= "no": imposing a profile the device reports as
+        -- unavailable leaves it with no working route.
+        if profile and profile.name == want and profile.available ~= "no" then
           event:set_data ("selected-profile", profile)
           log:info ("imposed preferred profile: " .. want)
           return
@@ -239,8 +242,19 @@ SimpleEventHook {
     for _, np in ipairs (avail) do
       local n = np["node.name"]
       if n and np["media.class"] == want_class then
-        present[n] = true
-        order[#order + 1] = n
+        -- Smart filters (echo-cancel, filter chains) present as nodes but must
+        -- never become the default: upstream's find-best-default-node skips
+        -- them for the same reason. The direction mapping is theirs.
+        local link_group = np["node.link-group"]
+        local smart = false
+        if link_group then
+          local direction = want_class:find ("Source", 1, true) and "output" or "input"
+          smart = futils.is_filter_smart (direction, link_group)
+        end
+        if not smart then
+          present[n] = true
+          order[#order + 1] = n
+        end
       end
     end
 

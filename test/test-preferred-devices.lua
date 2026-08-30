@@ -121,6 +121,34 @@ do
 end
 
 --------------------------------------------------------------------------
+print ("smart filters")
+do
+  -- Echo-cancel and filter chains show up as nodes but must never become the
+  -- default; upstream's find-best-default-node skips them too.
+  local wp = Fake.new { smart_filters = { ["echo-cancel"] = true } }
+  local c = wp:load (SRC)
+  local ev = wp:select_event { kind = "audio.sink", nodes = {
+    { name = "filter", class = SINK, link_group = "echo-cancel" },
+    { name = "speakers", class = SINK },
+  } }
+  c:run ("preferred-devices/select", ev)
+  check ("a smart filter is never chosen", ev:selected (), "speakers")
+  check ("and does not enter the list", count (wp:preferred ("sink"), "filter"), 0)
+end
+
+do
+  -- A node with a link-group that is NOT a registered smart filter is fine.
+  -- The Bluetooth microphone loopback is exactly this case.
+  local wp = Fake.new {}
+  local c = wp:load (SRC)
+  local ev = wp:select_event { kind = "audio.source", nodes = {
+    { name = "bt-mic", class = SOURCE, link_group = "loopback-1" },
+  } }
+  c:run ("preferred-devices/select", ev)
+  check ("a plain loopback is still selectable", ev:selected (), "bt-mic")
+end
+
+--------------------------------------------------------------------------
 print ("preferred profile")
 do
   local wp = Fake.new { profile_rules = { priorities = { "a2dp-sink-sbc_xq", "a2dp-sink" } } }
@@ -131,6 +159,20 @@ do
   }
   c:run ("preferred-devices/prefer-profile", ev)
   check ("picks the best available profile", ev:selected (), "a2dp-sink-sbc_xq")
+end
+
+do
+  -- Imposing a profile the device reports as unavailable leaves it with no
+  -- working route.
+  local wp = Fake.new { profile_rules = { priorities = { "a2dp-sink-sbc_xq", "a2dp-sink" } } }
+  local c = wp:load (SRC)
+  local ev = wp:profile_event {
+    device_props = { ["device.api"] = "bluez5" },
+    profiles = { "a2dp-sink" },
+    unavailable = { ["a2dp-sink-sbc_xq"] = true },
+  }
+  c:run ("preferred-devices/prefer-profile", ev)
+  check ("skips an unavailable profile", ev:selected (), "a2dp-sink")
 end
 
 do

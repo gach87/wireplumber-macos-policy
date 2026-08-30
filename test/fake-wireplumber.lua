@@ -18,6 +18,7 @@ Fake.__index = Fake
 ---   state          initial flat table behind State() (the preferred list)
 ---   profile_rules  what match_rules_update_properties returns
 ---   no_arrival     patterns for the preferred-devices.no-arrival section
+---   smart_filters  { [link_group] = true } for is_filter_smart
 ---   devices        device doubles for the "device" object manager
 ---   metadata       initial default.configured.* values
 function Fake.new (spec)
@@ -26,6 +27,7 @@ function Fake.new (spec)
   self.state = spec.state or {}
   self.profile_rules = spec.profile_rules
   self.no_arrival = spec.no_arrival or {}
+  self.smart_filters = spec.smart_filters or {}
   self.devices = spec.devices or {}
   self.metadata = spec.metadata or {}
   self.logs = {}
@@ -74,6 +76,9 @@ function Fake:_install ()
 
   Pod = { Object = function (t) return t end }
   package.loaded["common-utils"] = { parseParam = function (p) return p end }
+  package.loaded["filter-utils"] = { is_filter_smart = function (_, link_group)
+    return this.smart_filters[link_group] == true
+  end }
 
   Constraint = function (t) return t end
   EventInterest = function (t) return t end
@@ -108,7 +113,8 @@ function Fake:select_event (spec)
   local this = self
   local avail = {}
   for _, n in ipairs (spec.nodes or {}) do
-    table.insert (avail, { ["node.name"] = n.name, ["media.class"] = n.class })
+    table.insert (avail, { ["node.name"] = n.name, ["media.class"] = n.class,
+                           ["node.link-group"] = n.link_group })
   end
   local data = {
     ["available-nodes"] = parseable (avail),
@@ -137,12 +143,19 @@ function Fake:select_event (spec)
 end
 
 --- A select-profile event.
---- spec: device_props, profiles = {names}, selected
+--- spec: device_props, profiles = {names}, selected, unavailable = {[name]=true}
 function Fake:profile_event (spec)
   local data = { ["selected-profile"] = spec.selected }
   local profiles = {}
+  local unavailable = spec.unavailable or {}
   for _, name in ipairs (spec.profiles or {}) do
-    table.insert (profiles, { name = name, index = #profiles + 1 })
+    table.insert (profiles, { name = name, index = #profiles + 1,
+                              available = unavailable[name] and "no" or "yes" })
+  end
+  -- Profiles the device knows about but reports as unavailable still show up
+  -- in EnumProfile; that is exactly the case worth testing.
+  for name in pairs (unavailable) do
+    table.insert (profiles, { name = name, index = #profiles + 1, available = "no" })
   end
   return {
     get_data = function (_, k) return data[k] end,
