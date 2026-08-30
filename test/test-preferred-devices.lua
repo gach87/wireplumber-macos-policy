@@ -108,6 +108,38 @@ do
 end
 
 --------------------------------------------------------------------------
+print ("first run on a machine that already has a default")
+do
+  -- Regression, found installing on a second machine. Its stored
+  -- default.configured.audio.source named a node that no longer existed (the
+  -- card had changed profile), so find-stored-default-node could not select
+  -- it and find-best-default-node picked by priority instead -- at a priority
+  -- far below the 30000 that marks a manual choice. With an empty list the
+  -- seed order came from 'available-nodes', which is arbitrary, and the
+  -- component silently moved the machine onto a different microphone.
+  local wp = Fake.new { state = {} }
+  local c = wp:load (SRC)
+  local ev = select (c, wp, { kind = "audio.source", nodes = {
+    { name = "mic2", class = SOURCE },    -- first in enumeration order
+    { name = "mic1", class = SOURCE },
+  }, selected = "mic1", priority = 1000 })
+  check ("keeps the device the machine was already using", ev:selected (), "mic1")
+  check ("and seeds the list with it at the front",
+         wp:preferred ("source")[1], "mic1")
+end
+
+do
+  -- The other half: once the list exists it is the authority. A low-priority
+  -- native pick must not drag the list around on every event.
+  local wp = Fake.new { state = { ["sink.0"] = "dock", ["sink.1"] = "speakers" } }
+  local c = wp:load (SRC)
+  local ev = select (c, wp, { kind = "audio.sink", nodes = sinks ("dock", "speakers"),
+                              selected = "speakers", priority = 1000 })
+  check ("an existing list is not overridden by a low-priority pick",
+         ev:selected (), "dock")
+end
+
+--------------------------------------------------------------------------
 print ("direction filtering")
 do
   local wp = Fake.new {}

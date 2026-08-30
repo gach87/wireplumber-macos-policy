@@ -207,6 +207,12 @@ Things that each cost a real failure and are not documented anywhere obvious:
   declares the same `after` list you would, so the order between them is
   undefined and your decision can land after theirs was applied. The symptom
   misleads: the log says you picked correctly and `wpctl` shows something else.
+- **A stored default can name a node that no longer exists**, for instance a
+  card that came back under a different profile. `find-stored-default-node`
+  then cannot select it and `find-best-default-node` picks by priority
+  instead, far below the 30000 that marks a manual choice. On a first run that
+  is the difference between adopting the machine's current device and
+  silently moving it somewhere else.
 - **A manual choice only counts when it changes.** The native hook re-proposes
   it at 30000 on every event; without remembering the last one seen, you
   re-promote it and override a device that just arrived.

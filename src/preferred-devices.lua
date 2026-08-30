@@ -274,6 +274,7 @@ SimpleEventHook {
     end
 
     local list = load_list (kind)
+    local fresh = (#list == 0)
 
     -- Seed: any present node missing from the list joins it at the end.
     -- Without this the list starts empty and the component never picks
@@ -319,6 +320,20 @@ SimpleEventHook {
       to_front (list, sel)
       last_conf[kind] = sel
       log:info ("chosen by hand: " .. sel .. " -> front")
+    end
+
+    -- 2b. On the very first run for this direction the list is built from the
+    --     order of 'available-nodes', which is arbitrary. Honour whatever the
+    --     native hooks chose, at ANY priority, so that installing the
+    --     component does not silently move you off the device the machine was
+    --     already using. Step 2 does not cover this: it only fires at >= 30000,
+    --     and a machine whose stored default names a node that no longer
+    --     exists (a card that changed profile, say) falls back to
+    --     find-best-default-node, which selects at a much lower priority.
+    --     Only while the list is fresh: once it exists it is the authority,
+    --     and a low-priority native pick must never override it.
+    if fresh and sel and present[sel] then
+      to_front (list, sel)
     end
 
     -- 3. The first device in the list that is present wins.
