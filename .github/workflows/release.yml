@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar lua
+        run: sudo apt-get update -qq && sudo apt-get install -y lua5.4
+
+      # No se publica nada que no pase las pruebas.
+      - name: Pruebas
+        run: lua5.4 test/test-preferred-devices.lua
+
+      - name: Armar los paquetes
+        run: |
+          VER="${GITHUB_REF_NAME}"
+          NAME="wireplumber-macos-policy-${VER}"
+          mkdir -p "dist/$NAME"
+          cp -r src install.sh uninstall.sh README.md LICENSE "dist/$NAME/"
+          cd dist
+          zip -qr "$NAME.zip" "$NAME"
+          tar -czf "$NAME.tar.gz" "$NAME"
+          sha256sum "$NAME.zip" "$NAME.tar.gz" > SHA256SUMS
+          ls -l
+
+      - name: Publicar release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          generate_release_notes: true

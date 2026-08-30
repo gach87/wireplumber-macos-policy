@@ -1,5 +1,7 @@
 # wireplumber-macos-policy
 
+[![CI](https://github.com/gach87/wireplumber-macos-policy/actions/workflows/ci.yml/badge.svg)](https://github.com/gach87/wireplumber-macos-policy/actions/workflows/ci.yml)
+
 Política de selección de dispositivos de audio al estilo de macOS, como
 componente nativo de WirePlumber 0.5+.
 
@@ -60,6 +62,16 @@ desconexión es simplemente el siguiente presente.
 Corre **dentro del proceso de WirePlumber**: cero procesos extra, cero polling.
 
 ## Instalación
+
+Descarga el `.zip` o `.tar.gz` de la
+[última release](https://github.com/gach87/wireplumber-macos-policy/releases),
+descomprime y:
+
+```sh
+./install.sh
+```
+
+O desde el código:
 
 ```sh
 git clone https://github.com/gach87/wireplumber-macos-policy
@@ -147,6 +159,42 @@ obvio:
   evento, y el clic del usuario no hace nada.
 - El sandbox Lua **no expone `io` ni `os`**; para persistir se usa `State`.
 - Los `log:info` no se ven al nivel por defecto. Para depurar, `log:warning`.
+
+## Desarrollo
+
+```
+src/                       el componente y su configuración
+  preferred-devices.lua
+  config/*.conf
+test/
+  fake-wireplumber.lua     doble configurable de la API de WirePlumber
+  test-preferred-devices.lua
+  check-configs.sh
+```
+
+Las pruebas ejecutan la **lógica real del componente sin WirePlumber
+corriendo**. `fake-wireplumber.lua` implementa los globales que WirePlumber
+inyecta en el sandbox Lua (`Log`, `State`, `Json`, `SimpleEventHook`...) con
+valores que cada prueba configura, captura los hooks al registrarse y los
+invoca con eventos falsos:
+
+```lua
+local wp = Fake.new { state = { ["sink.0"] = "bocinas" } }
+local c  = wp:load ("src/preferred-devices.lua")
+local ev = wp:select_event { kind = "audio.sink", nodes = {...} }
+c:run ("preferred-devices/select", ev)
+assert (ev:selected () == "bt")
+```
+
+```sh
+lua5.3 test/test-preferred-devices.lua   # o lua5.4
+./test/check-configs.sh
+```
+
+Cada prueba se verifica rompiendo el arreglo que debería proteger. Las cinco
+mutaciones probadas —quitar el filtro por `media.class`, la guarda de llegada
+masiva, la exclusión `NO_ARRIVAL`, la guarda de llamada en curso y el filtro de
+dirección de ruta— son detectadas.
 
 ## Licencia
 
