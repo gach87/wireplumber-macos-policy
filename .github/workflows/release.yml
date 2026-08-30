@@ -13,14 +13,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Instalar lua
+      - name: Install lua
         run: sudo apt-get update -qq && sudo apt-get install -y lua5.4
 
-      # No se publica nada que no pase las pruebas.
-      - name: Pruebas
+      # Nothing ships that has not passed the tests.
+      - name: Tests
         run: lua5.4 test/test-preferred-devices.lua
 
-      - name: Armar los paquetes
+      - name: Build the packages
         run: |
           VER="${GITHUB_REF_NAME}"
           NAME="wireplumber-macos-policy-${VER}"
@@ -32,7 +32,7 @@ jobs:
           sha256sum "$NAME.zip" "$NAME.tar.gz" > SHA256SUMS
           ls -l
 
-      - name: Publicar release
+      - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
           files: |

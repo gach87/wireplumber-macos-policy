@@ -15,16 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Instalar ${{ matrix.lua }}
+      - name: Install ${{ matrix.lua }}
         run: sudo apt-get update -qq && sudo apt-get install -y ${{ matrix.lua }}
 
-      - name: Comprobar sintaxis
+      - name: Syntax check
         run: |
           for f in src/*.lua test/*.lua; do
             luac${{ matrix.lua == 'lua5.3' && '5.3' || '5.4' }} -p "$f"
           done
 
-      - name: Pruebas
+      - name: Tests
         run: ${{ matrix.lua }} test/test-preferred-devices.lua
 
   shell:
@@ -40,5 +40,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validar los .conf
+      - name: Validate the .conf files
         run: ./test/check-configs.sh
