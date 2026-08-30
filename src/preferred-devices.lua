@@ -38,6 +38,16 @@ no_arrival = Conf.get_section_as_json ("preferred-devices.no-arrival", Json.Arra
 -- selection one, at 30000 + the node's own priority.
 WIN_PRIO = 50000
 
+-- Media classes that count for each direction. These mirror what
+-- default-nodes/rescan actually collects: 'available-nodes' carries every node
+-- for BOTH directions, so each hook filters for itself. Matching only
+-- "Audio/Sink"/"Audio/Source" would silently make duplex devices and virtual
+-- sources unselectable. Audio/Sink is deliberately absent from the source set:
+-- upstream skips it there too.
+SINK_CLASSES   = { ["Audio/Sink"] = true, ["Audio/Duplex"] = true }
+SOURCE_CLASSES = { ["Audio/Source"] = true, ["Audio/Source/Virtual"] = true,
+                   ["Audio/Duplex"] = true }
+
 -- How many devices are remembered per direction.
 MAX_REMEMBERED = 32
 
@@ -152,12 +162,17 @@ SimpleEventHook {
     if not om then return end
     local n = 0
     for device in om:iterate () do
+      -- Only ALSA devices: that is exactly what device/mute-alsa-devices
+      -- muted. Undoing more than was done would clear a mute the user set by
+      -- hand on some other device.
+      if device.properties["device.api"] == "alsa" then
       for p in device:iterate_params ("Route") do
         local route = cutils.parseParam (p, "Route")
         if route and route.direction == "Output" and route.available ~= "no" then
           set_route_mute (device, route, false)
           n = n + 1
         end
+      end
       end
     end
     if n > 0 then
@@ -227,8 +242,8 @@ SimpleEventHook {
   execute = function (event)
     local dtype = event:get_properties ()["default-node.type"]
     local kind, want_class
-    if dtype == "audio.sink" then kind, want_class = "sink", "Audio/Sink"
-    elseif dtype == "audio.source" then kind, want_class = "source", "Audio/Source"
+    if dtype == "audio.sink" then kind, want_class = "sink", SINK_CLASSES
+    elseif dtype == "audio.source" then kind, want_class = "source", SOURCE_CLASSES
     else return end
 
     local avail = event:get_data ("available-nodes")
@@ -241,14 +256,14 @@ SimpleEventHook {
     local present, order = {}, {}
     for _, np in ipairs (avail) do
       local n = np["node.name"]
-      if n and np["media.class"] == want_class then
+      if n and want_class[np["media.class"]] then
         -- Smart filters (echo-cancel, filter chains) present as nodes but must
         -- never become the default: upstream's find-best-default-node skips
         -- them for the same reason. The direction mapping is theirs.
         local link_group = np["node.link-group"]
         local smart = false
         if link_group then
-          local direction = want_class:find ("Source", 1, true) and "output" or "input"
+          local direction = (kind == "source") and "output" or "input"
           smart = futils.is_filter_smart (direction, link_group)
         end
         if not smart then

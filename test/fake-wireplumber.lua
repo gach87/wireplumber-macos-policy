@@ -179,11 +179,13 @@ function Fake:node_added_event ()
   return self:select_event { kind = "audio.sink", nodes = {} }
 end
 
---- A device double with routes, to assert on unmuting.
-function Fake:device (routes)
+
+
+--- api defaults to "alsa" (what the automute actually touches).
+function Fake:device (routes, api)
   local this = self
   return {
-    properties = {},
+    properties = { ["device.api"] = api or "alsa" },
     iterate_params = function ()
       local i = 0
       return function () i = i + 1; return routes[i] end

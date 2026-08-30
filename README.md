@@ -132,6 +132,21 @@ device.profile.priority.rules = [
 
 To see what a device offers: `pw-cli enum-params <device-id> EnumProfile`.
 
+## Side effect worth knowing about
+
+To make the desktop's output picker work, the component keeps
+`default.configured.<type>` in sync with whichever device it selects. Without
+that, clicking the device that was already configured changes no metadata,
+emits no event, and does nothing.
+
+WirePlumber's own `default-nodes/store-configured-default-nodes` hook reacts to
+**any** change of that key, so it records the component's automatic choices in
+its stored history as if you had made them by hand. That history has no cap
+upstream, so it grows. It only matters if you uninstall the component: the
+fallback order it would then use has been shaped by automatic switches rather
+than by your choices. `~/.local/state/wireplumber/default-nodes` can be deleted
+to reset it.
+
 ## Known limitation
 
 **Restarting WirePlumber while Bluetooth headphones are connected loses the

@@ -120,6 +120,29 @@ do
   check ("a source event ignores sinks", ev:selected (), "a-mic")
 end
 
+do
+  -- rescan collects Audio/Duplex for both directions and
+  -- Audio/Source/Virtual for sources. Matching only the plain classes would
+  -- make those devices permanently unselectable.
+  local wp = Fake.new {}
+  local c = wp:load (SRC)
+  local ev = wp:select_event { kind = "audio.sink", nodes = {
+    { name = "duplex-card", class = "Audio/Duplex" },
+  } }
+  c:run ("preferred-devices/select", ev)
+  check ("a duplex device can be the default sink", ev:selected (), "duplex-card")
+end
+
+do
+  local wp = Fake.new {}
+  local c = wp:load (SRC)
+  local ev = wp:select_event { kind = "audio.source", nodes = {
+    { name = "virtual-mic", class = "Audio/Source/Virtual" },
+  } }
+  c:run ("preferred-devices/select", ev)
+  check ("a virtual source can be the default source", ev:selected (), "virtual-mic")
+end
+
 --------------------------------------------------------------------------
 print ("smart filters")
 do
@@ -200,6 +223,20 @@ do
   check ("unmutes the output route", wp.route_mutes[1] and wp.route_mutes[1].index, 7)
   check ("with mute = false", wp.route_mutes[1] and wp.route_mutes[1].mute, false)
   check ("and leaves the input route alone", #wp.route_mutes, 1)
+end
+
+do
+  -- device/mute-alsa-devices only mutes ALSA devices, so undoing more than
+  -- that would clear a mute the user set by hand elsewhere.
+  local wp = Fake.new {}
+  wp.devices = {
+    wp:device ({ { index = 1, device = 0, direction = "Output", available = "yes" } }, "bluez5"),
+    wp:device ({ { index = 2, device = 0, direction = "Output", available = "yes" } }, "alsa"),
+  }
+  local c = wp:load (SRC)
+  c:run ("preferred-devices/unmute-on-bt-return", wp:node_added_event ())
+  check ("only touches ALSA devices", #wp.route_mutes, 1)
+  check ("and it is the ALSA one", wp.route_mutes[1] and wp.route_mutes[1].index, 2)
 end
 
 --------------------------------------------------------------------------
