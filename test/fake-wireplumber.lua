@@ -1,41 +1,46 @@
--- Doble configurable de WirePlumber.
+-- Configurable WirePlumber test double.
 --
--- WirePlumber inyecta sus globales (Log, State, Json, SimpleEventHook...) en
--- el sandbox Lua del componente. Este modulo los implementa con valores que
--- CADA PRUEBA configura, para poder ejecutar la logica real del componente sin
--- WirePlumber corriendo y validar exactamente lo que hizo.
+-- WirePlumber injects its globals (Log, State, Json, SimpleEventHook, ...)
+-- into the component's Lua sandbox. This module implements them with values
+-- EACH TEST configures, so the component's real logic can run without
+-- WirePlumber and we can assert on exactly what it did.
 --
--- Uso:
---   local wp = Fake.new { state = {...}, profile_rules = {...} }
+--   local wp = Fake.new { state = {...}, no_arrival = {...} }
 --   local c  = wp:load ("src/preferred-devices.lua")
 --   local ev = wp:select_event { kind = "audio.sink", nodes = {...} }
 --   c:run ("preferred-devices/select", ev)
---   assert (ev:selected () == "loquesea")
+--   assert (ev:selected () == "headset")
 
 local Fake = {}
 Fake.__index = Fake
 
 --- spec:
----   state          tabla plana inicial de State() (la lista de preferidos)
----   profile_rules  lo que devuelve match_rules_update_properties
----   devices        lista de dobles de dispositivo para el object-manager
----   metadata       valores iniciales de default.configured.*
+---   state          initial flat table behind State() (the preferred list)
+---   profile_rules  what match_rules_update_properties returns
+---   no_arrival     patterns for the preferred-devices.no-arrival section
+---   devices        device doubles for the "device" object manager
+---   metadata       initial default.configured.* values
 function Fake.new (spec)
   local self = setmetatable ({}, Fake)
   spec = spec or {}
   self.state = spec.state or {}
   self.profile_rules = spec.profile_rules
+  self.no_arrival = spec.no_arrival or {}
   self.devices = spec.devices or {}
   self.metadata = spec.metadata or {}
   self.logs = {}
   self.hooks = {}
-  self.route_mutes = {}   -- {device, route, mute} que el componente aplico
+  self.route_mutes = {}   -- what the component applied, for assertions
   return self
 end
 
+local function parseable (v)
+  return { parse = function () return v end }
+end
+
 function Fake:_install ()
-  local self_ = self
-  local function sink (_, m) table.insert (self_.logs, tostring (m)) end
+  local this = self
+  local function sink (_, m) table.insert (this.logs, tostring (m)) end
 
   Log = { open_topic = function ()
     return { info = sink, warning = sink, debug = function () end }
@@ -43,24 +48,28 @@ function Fake:_install ()
 
   State = function ()
     return {
-      load = function () return self_.state end,
-      -- El componente guarda con save_after_timeout; aqui es inmediato para
-      -- que la prueba pueda inspeccionar el resultado sin esperas.
-      save_after_timeout = function (_, t) self_.state = t end,
+      load = function () return this.state end,
+      -- The component saves with save_after_timeout; immediate here so a test
+      -- can inspect the result without waiting.
+      save_after_timeout = function (_, t) this.state = t end,
     }
   end
 
-  Conf = { get_section_as_json = function (_, default) return default end }
+  Conf = { get_section_as_json = function (name, default)
+    if name == "preferred-devices.no-arrival" then
+      return parseable (this.no_arrival)
+    end
+    return default
+  end }
 
   Json = {
-    Array  = function (t) return t or {} end,
+    Array  = function (t) return parseable (t or {}) end,
     Object = function (t) return { to_string = function () return t end } end,
-    Raw    = function (v) return { parse = function () return v end } end,
+    Raw    = parseable,
   }
 
-  -- Devuelve lo que la prueba configuro como reglas de perfil.
   JsonUtils = { match_rules_update_properties = function ()
-    return self_.profile_rules or {}
+    return this.profile_rules or {}
   end }
 
   Pod = { Object = function (t) return t end }
@@ -69,35 +78,40 @@ function Fake:_install ()
   Constraint = function (t) return t end
   EventInterest = function (t) return t end
   SimpleEventHook = function (def)
-    def.register = function (d) self_.hooks[d.name] = d; return d end
+    def.register = function (d) this.hooks[d.name] = d; return d end
     return def
   end
 end
 
---- Carga el componente con los globales ya inyectados.
+--- Loads the component with the globals already injected.
 function Fake:load (path)
   self:_install ()
   dofile (path)
   local hooks = self.hooks
   return {
     run = function (_, name, event)
-      local h = hooks[name] or error ("hook no registrado: " .. name)
+      local h = hooks[name] or error ("hook not registered: " .. name)
       return h.execute (event)
     end,
-    names = function () local t = {} for k in pairs (hooks) do t[#t+1] = k end return t end,
+    names = function ()
+      local t = {}
+      for k in pairs (hooks) do t[#t + 1] = k end
+      table.sort (t)
+      return t
+    end,
   }
 end
 
---- Evento de select-default-node.
+--- A select-default-node event.
 --- spec: kind, nodes = {{name=, class=}}, selected, priority
 function Fake:select_event (spec)
-  local self_ = self
+  local this = self
   local avail = {}
   for _, n in ipairs (spec.nodes or {}) do
     table.insert (avail, { ["node.name"] = n.name, ["media.class"] = n.class })
   end
   local data = {
-    ["available-nodes"] = { parse = function () return avail end },
+    ["available-nodes"] = parseable (avail),
     ["selected-node"] = spec.selected,
     ["selected-node-priority"] = spec.priority,
   }
@@ -108,22 +122,22 @@ function Fake:select_event (spec)
     get_source = function () return { call = function (_, _, which)
       if which == "metadata" then
         return { lookup = function () return {
-          set = function (_, _, key, _, val) self_.metadata[key] = val end,
+          set = function (_, _, key, _, val) this.metadata[key] = val end,
         } end }
       elseif which == "device" then
         return { iterate = function ()
           local i = 0
-          return function () i = i + 1; return self_.devices[i] end
+          return function () i = i + 1; return this.devices[i] end
         end }
       end
     end } end,
-    selected = function () return data["selected-node"] end,
-    priority = function () return data["selected-node-priority"] end,
+    selected  = function () return data["selected-node"] end,
+    priority  = function () return data["selected-node-priority"] end,
   }
 end
 
---- Evento de select-profile.
---- spec: device_props, profiles = {nombres}, selected
+--- A select-profile event.
+--- spec: device_props, profiles = {names}, selected
 function Fake:profile_event (spec)
   local data = { ["selected-profile"] = spec.selected }
   local profiles = {}
@@ -147,26 +161,27 @@ function Fake:profile_event (spec)
   }
 end
 
---- Evento de node-added (para el hook de desmuteo).
+--- A node-added event, for the unmute hook.
 function Fake:node_added_event ()
   return self:select_event { kind = "audio.sink", nodes = {} }
 end
 
---- Doble de dispositivo con rutas, para validar el desmuteo.
+--- A device double with routes, to assert on unmuting.
 function Fake:device (routes)
-  local self_ = self
-  local d = { properties = {} }
-  d.iterate_params = function ()
-    local i = 0
-    return function () i = i + 1; return routes[i] end
-  end
-  d.set_param = function (_, _, param)
-    table.insert (self_.route_mutes, { index = param.index, mute = param.props.mute })
-  end
-  return d
+  local this = self
+  return {
+    properties = {},
+    iterate_params = function ()
+      local i = 0
+      return function () i = i + 1; return routes[i] end
+    end,
+    set_param = function (_, _, param)
+      table.insert (this.route_mutes, { index = param.index, mute = param.props.mute })
+    end,
+  }
 end
 
---- Lista ordenada de preferidos tal como quedo en el estado.
+--- The ordered preferred list as it ended up in the state.
 function Fake:preferred (kind)
   local t, i = {}, 0
   while self.state[kind .. "." .. i] do

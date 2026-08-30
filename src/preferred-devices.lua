@@ -1,70 +1,104 @@
--- Seleccion de salida/entrada por defecto al estilo macOS.
+-- macOS-style default audio device selection for WirePlumber.
 --
--- Modelo copiado de macOS, leido de /Library/Preferences/Audio/
--- com.apple.audio.SystemSettings.plist: macOS guarda una lista ORDENADA de
--- "preferred devices" por direccion y un "global.arrival" por dispositivo.
--- La regla que reproduce su comportamiento es:
+-- The model is taken from macOS itself, read out of
+-- /Library/Preferences/Audio/com.apple.audio.SystemSettings.plist: macOS keeps
+-- an ORDERED "preferred devices" list per direction, plus a "global.arrival"
+-- {seed,time} per device and a global arrival counter. The rule that
+-- reproduces its behaviour is:
 --
---     al LLEGAR un dispositivo pasa al FRENTE de la lista,
---     y gana siempre el primero de la lista que este PRESENTE.
+--     an ARRIVING device moves to the FRONT of the list,
+--     and the first device in the list that is PRESENT wins.
 --
--- Eso da a la vez tres cosas que las prioridades de WirePlumber no pueden
--- expresar juntas: que el BT gane al conectarse, que una eleccion manual se
--- respete estando el BT conectado, y que al desconectar caiga a algo
--- predecible en vez de a lo que dicte el puntaje del historial.
+-- That expresses three things at once which WirePlumber's priorities cannot:
+-- headphones win when you plug them in, a manual choice is respected while
+-- they stay connected, and unplugging falls back to something predictable
+-- instead of whatever the stored-history score happens to pick.
 
 log = Log.open_topic ("s-preferred-devices")
 cutils = require ("common-utils")
 
--- Mismas reglas declarativas que lee device/find-preferred-profile, para que
--- el usuario configure esto de forma nativa en vez de tocar el script.
-profile_rules = Conf.get_section_as_json ("device.profile.priority.rules", Json.Array {})
-
 state = State ("audio-preferred-devices")
 st = state:load ()
 
--- Dispositivos cuya LLEGADA no debe robar el foco: los sinks RTP de red
--- aparecen y desaparecen solos segun si el desktop responde, y eso no es una
--- accion del usuario. Siguen en la lista (elegibles a mano y como respaldo).
-NO_ARRIVAL = { "to%-desktop%-" }
+-- Same declarative rules that device/find-preferred-profile reads, so profile
+-- preferences are configured natively instead of by editing this script.
+profile_rules = Conf.get_section_as_json ("device.profile.priority.rules", Json.Array {})
 
--- Gana a los tres hooks de WirePlumber: el mayor de ellos es el de seleccion
--- manual, con 30000 + prioridad del nodo.
+-- Lua patterns matched against node.name. A device whose arrival matches is
+-- NOT moved to the front: it still takes part in the list (selectable by hand,
+-- usable as a fallback), it just does not steal focus when it shows up.
+--
+-- This is for nodes that come and go on their own rather than because someone
+-- did something: network sinks that track a remote host's reachability,
+-- virtual monitors, loopbacks. Empty by default.
+no_arrival = Conf.get_section_as_json ("preferred-devices.no-arrival", Json.Array {}):parse ()
+
+-- Beats WirePlumber's three native hooks; the highest of those is the manual
+-- selection one, at 30000 + the node's own priority.
 WIN_PRIO = 50000
 
+-- How many devices are remembered per direction.
+MAX_REMEMBERED = 32
+
+-- Node names present at the previous event, per direction. Used to tell an
+-- arrival from a device that was already there.
 seen = {}
--- Ultima eleccion manual observada por direccion. Sin esto, el hook nativo
--- find-selected-default-node vuelve a proponerla con 30000 en CADA evento y la
--- re-promoveriamos al frente una y otra vez, pisando la llegada de un
--- dispositivo nuevo. Solo cuenta como eleccion manual cuando CAMBIA.
+
+-- Last manual selection observed, per direction. Without this, the native
+-- find-selected-default-node hook re-proposes it at 30000 on EVERY event and
+-- we would keep promoting it to the front, overriding a device that just
+-- arrived. It only counts as a manual choice when it CHANGES.
 last_conf = {}
 
+-- Last value written to default.configured per direction. Without this, a
+-- write that never takes effect would be retried on every event, and every
+-- retry would emit another event: an infinite loop.
+wrote = {}
+
 local function is_no_arrival (name)
-  for _, pat in ipairs (NO_ARRIVAL) do
+  for _, pat in ipairs (no_arrival) do
     if name:find (pat) then return true end
   end
   return false
 end
 
+-- Does not stop at the first hole. The state file is meant to be hand-edited,
+-- and a hole (say sink.0 and sink.2 with no sink.1) would SILENTLY drop
+-- everything after it, including devices that are simply not connected right
+-- now. All indices are collected and compacted.
 local function load_list (kind)
-  local t, i = {}, 0
-  while st[kind .. "." .. i] do
-    t[#t + 1] = st[kind .. "." .. i]
-    i = i + 1
+  local idx = {}
+  for k, v in pairs (st) do
+    local n = k:match ("^" .. kind .. "%.(%d+)$")
+    if n then idx[#idx + 1] = { tonumber (n), v } end
   end
-  return t
+  table.sort (idx, function (a, b) return a[1] < b[1] end)
+  -- Deduplicated here: the list must NEVER hold repeats. A duplicate added by
+  -- hand would survive to_front (which only looks at position) and pile up on
+  -- every promotion.
+  local out, taken = {}, {}
+  for _, e in ipairs (idx) do
+    if not taken[e[2]] then
+      taken[e[2]] = true
+      out[#out + 1] = e[2]
+    end
+  end
+  return out
 end
 
 local function save_list (kind, list)
-  local i = 0
-  while st[kind .. "." .. i] do st[kind .. "." .. i] = nil; i = i + 1 end
+  for k in pairs (st) do
+    if k:match ("^" .. kind .. "%.%d+$") then st[k] = nil end
+  end
   for j, v in ipairs (list) do st[kind .. "." .. (j - 1)] = v end
   state:save_after_timeout (st)
 end
 
+-- Removes EVERY occurrence, not just the first: the state is hand-editable and
+-- a duplicate would otherwise stay forever, accumulating on each promotion.
 local function to_front (list, name)
-  for i, v in ipairs (list) do
-    if v == name then table.remove (list, i) break end
+  for i = #list, 1, -1 do
+    if list[i] == name then table.remove (list, i) end
   end
   table.insert (list, 1, name)
 end
@@ -74,13 +108,25 @@ local function contains (list, name)
   return false
 end
 
--- Deshace el mute protector cuando VUELVE el Bluetooth.
+-- The list only ever grows: every device seen is remembered forever. Bound it
+-- by dropping the oldest entries that are NOT present, so something currently
+-- in use is never forgotten.
+local function trim (list, present)
+  for i = #list, 1, -1 do
+    if #list <= MAX_REMEMBERED then break end
+    if not present[list[i]] then table.remove (list, i) end
+  end
+end
+
+--------------------------------------------------------------------------
+-- Undo the protective mute when Bluetooth comes back.
 --
--- El ajuste device.routes.mute-on-bluetooth-playback-removed mutea todas las
--- salidas al desaparecer el BT y NO desmutea nunca. Su proposito es "te
--- alejaste del equipo y no quiero que suene por las cornetas". Si el BT esta
--- de vuelta, esa condicion ya termino. Si el BT NO vuelve, el mute se queda y
--- la proteccion sigue intacta.
+-- device.routes.mute-on-bluetooth-playback-removed mutes every output when the
+-- Bluetooth device goes away, and never unmutes. Its purpose is "you walked
+-- away, I do not want sound coming out of the speakers". If Bluetooth is back,
+-- that condition is over. If it does not come back the mute stays, so the
+-- protection is intact.
+--------------------------------------------------------------------------
 local function set_route_mute (device, route, mute)
   device:set_param ("Route", Pod.Object {
     "Spa:Pod:Object:Param:Route", "Route",
@@ -114,17 +160,21 @@ SimpleEventHook {
       end
     end
     if n > 0 then
-      log:info ("BT de vuelta: deshecho el mute protector en " .. n .. " rutas")
+      log:info ("bluetooth back: undid the protective mute on " .. n .. " routes")
     end
   end
 }:register ()
 
--- Impone el perfil preferido de un dispositivo ANTES de que se restaure el
--- guardado. Hace falta porque WirePlumber sobrescribe el perfil guardado con
--- el que acabe eligiendo (degradando p.ej. de 'a2dp-sink-sbc_xq' a
--- 'a2dp-sink', o sea de SBC-XQ a SBC pelado) y, una vez hay perfil elegido,
--- find-preferred-profile se salta. Corre DESPUES de find-calling-profile y
--- respeta un perfil ya elegido, para no cortar una llamada en curso.
+--------------------------------------------------------------------------
+-- Impose the preferred device profile BEFORE the stored one is restored.
+--
+-- Needed because WirePlumber overwrites the stored profile with whatever it
+-- ends up choosing (degrading e.g. a2dp-sink-sbc_xq to a2dp-sink, that is
+-- SBC-XQ down to plain SBC), and once a profile is selected
+-- device/find-preferred-profile skips itself. Runs AFTER
+-- device/find-calling-profile and respects an already selected profile, so an
+-- ongoing call is never cut off.
+--------------------------------------------------------------------------
 SimpleEventHook {
   name = "preferred-devices/prefer-profile",
   after = { "device/find-calling-profile" },
@@ -133,20 +183,20 @@ SimpleEventHook {
     EventInterest { Constraint { "event.type", "=", "select-profile" } },
   },
   execute = function (event)
-    if event:get_data ("selected-profile") then return end  -- llamada en curso
+    if event:get_data ("selected-profile") then return end  -- call in progress
 
     local device = event:get_subject ()
     local props = JsonUtils.match_rules_update_properties (profile_rules,
                                                            device.properties)
-    local p_array = props["priorities"]
-    if not p_array then return end
+    local wanted = props["priorities"]
+    if not wanted then return end
 
-    for _, want in ipairs (Json.Raw (p_array):parse ()) do
+    for _, want in ipairs (Json.Raw (wanted):parse ()) do
       for p in device:iterate_params ("EnumProfile") do
-        local dp = cutils.parseParam (p, "EnumProfile")
-        if dp and dp.name == want then
-          event:set_data ("selected-profile", dp)
-          log:info ("perfil preferido impuesto: " .. want)
+        local profile = cutils.parseParam (p, "EnumProfile")
+        if profile and profile.name == want then
+          event:set_data ("selected-profile", profile)
+          log:info ("imposed preferred profile: " .. want)
           return
         end
       end
@@ -154,23 +204,25 @@ SimpleEventHook {
   end
 }:register ()
 
+--------------------------------------------------------------------------
+-- Pick the default node: first device in the preferred list that is present.
+--------------------------------------------------------------------------
 SimpleEventHook {
   name = "preferred-devices/select",
-  -- Despues de los tres hooks nativos, para ver que eligieron y poder
-  -- detectar la seleccion manual antes de imponer la nuestra.
+  -- After the three native hooks, so we can see what they chose and detect a
+  -- manual selection before imposing ours.
   after = { "default-nodes/find-best-default-node",
             "default-nodes/find-selected-default-node",
             "default-nodes/find-stored-default-node" },
-  -- IMPRESCINDIBLE: apply-default-node declara el MISMO 'after' que nosotros,
-  -- asi que sin esto el orden entre ambos queda indefinido y nuestra decision
-  -- puede llegar despues de que ya se aplico la suya.
+  -- ESSENTIAL: apply-default-node declares the SAME 'after' list we do, so
+  -- without this the order between the two is undefined and our decision can
+  -- land after theirs has already been applied.
   before = { "default-nodes/apply-default-node" },
   interests = {
     EventInterest { Constraint { "event.type", "=", "select-default-node" } },
   },
   execute = function (event)
-    local props = event:get_properties ()
-    local dtype = props["default-node.type"]
+    local dtype = event:get_properties ()["default-node.type"]
     local kind, want_class
     if dtype == "audio.sink" then kind, want_class = "sink", "Audio/Sink"
     elseif dtype == "audio.source" then kind, want_class = "source", "Audio/Source"
@@ -180,10 +232,10 @@ SimpleEventHook {
     avail = avail and avail:parse ()
     if not avail then return end
 
+    -- NOTE: 'available-nodes' carries EVERY node, not just the ones for this
+    -- direction. WirePlumber's own scripts filter by media.class by hand;
+    -- without this the source list fills up with sinks.
     local present, order = {}, {}
-    -- OJO: 'available-nodes' trae TODOS los nodos, no solo los de esta
-    -- direccion. Los propios scripts de WirePlumber filtran por media.class a
-    -- mano; sin esto, la lista de entradas se llena de sinks.
     for _, np in ipairs (avail) do
       local n = np["node.name"]
       if n and np["media.class"] == want_class then
@@ -194,17 +246,18 @@ SimpleEventHook {
 
     local list = load_list (kind)
 
-    -- Auto-siembra: todo nodo presente que no este en la lista entra al final.
-    -- Sin esto la lista arranca vacia y el componente no elige nunca nada.
-    -- El orden inicial lo pone la seleccion vigente, mas abajo.
+    -- Seed: any present node missing from the list joins it at the end.
+    -- Without this the list starts empty and the component never picks
+    -- anything, silently. The initial order comes from the current selection,
+    -- handled further down.
     for _, n in ipairs (order) do
       if not contains (list, n) then list[#list + 1] = n end
     end
 
-    -- 1. Llegadas -> al frente. En el primer evento no se considera llegada
-    --    nada (no hay con que comparar). Si aparece MAS DE UNO a la vez es un
-    --    evento del grafo (un reinicio hace reaparecer todo), no una accion
-    --    del usuario: entran a la lista pero al final, sin promover.
+    -- 1. Arrivals move to the front. Nothing counts as an arrival on the first
+    --    event, there is nothing to compare against. If MORE THAN ONE shows up
+    --    at once it is a graph event (a restart makes everything reappear) and
+    --    not a user action: they join the list but at the end, unpromoted.
     local prev = seen[kind]
     if prev then
       local arrivals = {}
@@ -221,53 +274,52 @@ SimpleEventHook {
             if not contains (list, n) then list[#list + 1] = n end
           else
             to_front (list, n)
-            log:info ("llego " .. n .. " -> al frente")
+            log:info ("arrived: " .. n .. " -> front")
           end
         end
       end
     end
     seen[kind] = present
 
-    -- 2. Eleccion manual -> al frente. El hook nativo find-selected-default-node
-    --    ya la habra puesto con prioridad >= 30000; eso es la señal.
+    -- 2. A manual choice moves to the front. The native
+    --    find-selected-default-node hook will have set it at >= 30000; that is
+    --    the signal.
     local sel = event:get_data ("selected-node")
     local sel_prio = event:get_data ("selected-node-priority") or 0
-    if sel and sel_prio >= 30000 and present[sel] then
-      if last_conf[kind] ~= sel then
-        to_front (list, sel)
-        last_conf[kind] = sel
-        log:info ("elegido a mano " .. sel .. " -> al frente")
-      end
+    if sel and sel_prio >= 30000 and present[sel] and last_conf[kind] ~= sel then
+      to_front (list, sel)
+      last_conf[kind] = sel
+      log:info ("chosen by hand: " .. sel .. " -> front")
     end
 
-    -- 3. Gana el primero de la lista que este presente.
+    -- 3. The first device in the list that is present wins.
     local win
     for _, n in ipairs (list) do
       if present[n] then win = n break end
     end
+
     if win then
       event:set_data ("selected-node-priority", WIN_PRIO)
       event:set_data ("selected-node", win)
 
-      -- Mantener 'default.configured' en sincronia con el ganador. Sin esto,
-      -- si eliges a mano el mismo dispositivo que ya figuraba configurado, el
-      -- metadata no cambia, no se emite evento, y tu clic no hace nada.
-      -- Escribiendolo, cualquier eleccion tuya produce un cambio real que si
-      -- podemos detectar. No hay bucle: al reentrar, last_conf ya coincide.
-      if sel ~= win then
+      -- Keep default.configured in sync with the winner. Without this, picking
+      -- by hand the device that was already configured changes no metadata,
+      -- emits no event, and the click does nothing.
+      if sel ~= win and wrote[kind] ~= win then
         local mom = event:get_source ():call ("get-object-manager", "metadata")
         local md = mom and mom:lookup { Constraint { "metadata.name", "=", "default" } }
         if md then
           md:set (0, "default.configured." .. dtype, "Spa:String:JSON",
                   Json.Object { name = win }:to_string ())
           last_conf[kind] = win
+          wrote[kind] = win
         end
       end
     end
-    log:info ("" .. kind .. " -> " .. tostring (win))
 
+    trim (list, present)
     save_list (kind, list)
   end
 }:register ()
 
-log:info ("componente preferred-devices cargado")
+log:info ("preferred-devices component loaded")

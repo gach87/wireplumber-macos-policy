@@ -1,122 +1,127 @@
--- Pruebas de la logica del componente, con el doble configurable.
--- Cada prueba construye su propio Fake con los valores que necesita, carga el
--- componente real y valida lo que hizo.
+-- Tests for the component's logic, using the configurable double.
+-- Each test builds its own Fake with the values it needs, loads the real
+-- component and asserts on what it did.
 
 local HERE = arg[0]:match ("(.*)/") or "."
 local Fake = dofile (HERE .. "/fake-wireplumber.lua")
-local SRC = HERE .. "/../src/preferred-devices.lua"
+local SRC  = HERE .. "/../src/preferred-devices.lua"
 
-local SINK, SRCC = "Audio/Sink", "Audio/Source"
+local SINK, SOURCE = "Audio/Sink", "Audio/Source"
 local pass, fail = 0, 0
 
 local function check (name, got, want)
   if got == want then
     pass = pass + 1
-    print (string.format ("  ok   %s", name))
+    print (string.format ("  ok    %s", name))
   else
     fail = fail + 1
-    print (string.format ("  FALLO %s\n         esperado: %s\n         obtenido: %s",
+    print (string.format ("  FAIL  %s\n          want: %s\n          got:  %s",
                           name, tostring (want), tostring (got)))
   end
 end
 
-local function nodes (...)
+local function sinks (...)
   local t = {}
   for _, n in ipairs {...} do table.insert (t, { name = n, class = SINK }) end
   return t
 end
 
--- Corre el hook de seleccion una vez y devuelve el evento ya resuelto.
 local function select (comp, wp, spec)
   local ev = wp:select_event (spec)
   comp:run ("preferred-devices/select", ev)
   return ev
 end
 
---------------------------------------------------------------------------
-print ("llegada de un dispositivo")
-do
-  local wp = Fake.new { state = { ["sink.0"] = "bocinas" } }
-  local c = wp:load (SRC)
-  -- primer evento: establece la foto inicial, nada cuenta como llegada
-  select (c, wp, { kind = "audio.sink", nodes = nodes ("bocinas") })
-  -- segundo: aparece el BT
-  local ev = select (c, wp, { kind = "audio.sink", nodes = nodes ("bocinas", "bt") })
-  check ("el recien llegado gana", ev:selected (), "bt")
-  check ("y queda al frente de la lista", wp:preferred ("sink")[1], "bt")
+local function count (list, name)
+  local n = 0
+  for _, v in ipairs (list) do if v == name then n = n + 1 end end
+  return n
 end
 
 --------------------------------------------------------------------------
-print ("eleccion manual estando el BT conectado")
+print ("a device arrives")
 do
-  local wp = Fake.new { state = { ["sink.0"] = "bt", ["sink.1"] = "cornetas" } }
+  local wp = Fake.new { state = { ["sink.0"] = "speakers" } }
   local c = wp:load (SRC)
-  select (c, wp, { kind = "audio.sink", nodes = nodes ("bt", "cornetas") })
-  -- el hook nativo ya eligio "cornetas" con el bono de seleccion manual
-  local ev = select (c, wp, { kind = "audio.sink", nodes = nodes ("bt", "cornetas"),
-                              selected = "cornetas", priority = 30900 })
-  check ("la eleccion manual gana al BT", ev:selected (), "cornetas")
-  check ("y pasa al frente", wp:preferred ("sink")[1], "cornetas")
+  -- first event only takes the initial snapshot; nothing counts as an arrival
+  select (c, wp, { kind = "audio.sink", nodes = sinks ("speakers") })
+  local ev = select (c, wp, { kind = "audio.sink", nodes = sinks ("speakers", "headset") })
+  check ("the arriving device wins", ev:selected (), "headset")
+  check ("and lands at the front of the list", wp:preferred ("sink")[1], "headset")
 end
 
 --------------------------------------------------------------------------
-print ("desconexion")
+print ("manual choice while the headset is connected")
 do
-  local wp = Fake.new { state = { ["sink.0"] = "bt", ["sink.1"] = "cornetas",
-                                  ["sink.2"] = "bocinas" } }
+  local wp = Fake.new { state = { ["sink.0"] = "headset", ["sink.1"] = "dock" } }
   local c = wp:load (SRC)
-  select (c, wp, { kind = "audio.sink", nodes = nodes ("bt", "cornetas", "bocinas") })
-  local ev = select (c, wp, { kind = "audio.sink", nodes = nodes ("cornetas", "bocinas") })
-  check ("cae al siguiente presente, no al de mayor prioridad", ev:selected (), "cornetas")
+  select (c, wp, { kind = "audio.sink", nodes = sinks ("headset", "dock") })
+  -- the native hook already picked "dock" with the manual-selection bonus
+  local ev = select (c, wp, { kind = "audio.sink", nodes = sinks ("headset", "dock"),
+                              selected = "dock", priority = 30900 })
+  check ("the manual choice beats the headset", ev:selected (), "dock")
+  check ("and moves to the front", wp:preferred ("sink")[1], "dock")
 end
 
 --------------------------------------------------------------------------
-print ("reconexion")
+print ("disconnect")
 do
-  local wp = Fake.new { state = { ["sink.0"] = "cornetas", ["sink.1"] = "bt" } }
+  local wp = Fake.new { state = { ["sink.0"] = "headset", ["sink.1"] = "dock",
+                                  ["sink.2"] = "speakers" } }
   local c = wp:load (SRC)
-  select (c, wp, { kind = "audio.sink", nodes = nodes ("cornetas") })
-  local ev = select (c, wp, { kind = "audio.sink", nodes = nodes ("cornetas", "bt") })
-  check ("al reconectar vuelve a ganar", ev:selected (), "bt")
+  select (c, wp, { kind = "audio.sink", nodes = sinks ("headset", "dock", "speakers") })
+  local ev = select (c, wp, { kind = "audio.sink", nodes = sinks ("dock", "speakers") })
+  check ("falls back to the next present entry, in list order", ev:selected (), "dock")
 end
 
 --------------------------------------------------------------------------
-print ("dispositivos que no deben robar el foco (NO_ARRIVAL)")
+print ("reconnect")
 do
-  local wp = Fake.new { state = { ["sink.0"] = "bt" } }
+  local wp = Fake.new { state = { ["sink.0"] = "dock", ["sink.1"] = "headset" } }
   local c = wp:load (SRC)
-  select (c, wp, { kind = "audio.sink", nodes = nodes ("bt") })
-  -- un sink de red reaparece: no es una accion del usuario
-  local ev = select (c, wp, { kind = "audio.sink", nodes = nodes ("bt", "to-desktop-speakers") })
-  check ("el sink de red no roba el foco", ev:selected (), "bt")
+  select (c, wp, { kind = "audio.sink", nodes = sinks ("dock") })
+  local ev = select (c, wp, { kind = "audio.sink", nodes = sinks ("dock", "headset") })
+  check ("wins again on reconnect", ev:selected (), "headset")
 end
 
 --------------------------------------------------------------------------
-print ("reinicio del grafo (reaparecen varios a la vez)")
+print ("devices that must not steal focus (no-arrival patterns)")
 do
-  local wp = Fake.new { state = { ["sink.0"] = "bt" } }
+  local wp = Fake.new { state = { ["sink.0"] = "headset" },
+                        no_arrival = { "^network%-" } }
   local c = wp:load (SRC)
-  select (c, wp, { kind = "audio.sink", nodes = nodes ("bt") })
-  local ev = select (c, wp, { kind = "audio.sink", nodes = nodes ("bt", "hdmi1", "hdmi2") })
-  check ("varias llegadas a la vez no reordenan", ev:selected (), "bt")
-  check ("y no se cuelan al frente", wp:preferred ("sink")[1], "bt")
+  select (c, wp, { kind = "audio.sink", nodes = sinks ("headset") })
+  local ev = select (c, wp, { kind = "audio.sink", nodes = sinks ("headset", "network-sink") })
+  check ("a matching device does not steal focus", ev:selected (), "headset")
+  check ("but still joins the list", count (wp:preferred ("sink"), "network-sink"), 1)
 end
 
 --------------------------------------------------------------------------
-print ("filtrado por direccion")
+print ("graph restart (several nodes reappear at once)")
+do
+  local wp = Fake.new { state = { ["sink.0"] = "headset" } }
+  local c = wp:load (SRC)
+  select (c, wp, { kind = "audio.sink", nodes = sinks ("headset") })
+  local ev = select (c, wp, { kind = "audio.sink", nodes = sinks ("headset", "hdmi1", "hdmi2") })
+  check ("multiple arrivals do not reorder", ev:selected (), "headset")
+  check ("and do not jump to the front", wp:preferred ("sink")[1], "headset")
+end
+
+--------------------------------------------------------------------------
+print ("direction filtering")
 do
   local wp = Fake.new {}
   local c = wp:load (SRC)
   local ev = wp:select_event { kind = "audio.source", nodes = {
-    { name = "un-sink", class = SINK },
-    { name = "un-mic",  class = SRCC },
+    { name = "a-sink", class = SINK },
+    { name = "a-mic",  class = SOURCE },
   } }
   c:run ("preferred-devices/select", ev)
-  check ("un evento de entrada ignora los sinks", ev:selected (), "un-mic")
+  check ("a source event ignores sinks", ev:selected (), "a-mic")
 end
 
 --------------------------------------------------------------------------
-print ("perfil preferido")
+print ("preferred profile")
 do
   local wp = Fake.new { profile_rules = { priorities = { "a2dp-sink-sbc_xq", "a2dp-sink" } } }
   local c = wp:load (SRC)
@@ -125,7 +130,7 @@ do
     profiles = { "a2dp-sink", "a2dp-sink-sbc_xq", "headset-head-unit" },
   }
   c:run ("preferred-devices/prefer-profile", ev)
-  check ("elige el mejor perfil disponible", ev:selected (), "a2dp-sink-sbc_xq")
+  check ("picks the best available profile", ev:selected (), "a2dp-sink-sbc_xq")
 end
 
 do
@@ -134,14 +139,14 @@ do
   local ev = wp:profile_event {
     device_props = { ["device.api"] = "bluez5" },
     profiles = { "a2dp-sink-sbc_xq", "headset-head-unit" },
-    selected = { name = "headset-head-unit" },   -- llamada en curso
+    selected = { name = "headset-head-unit" },   -- call in progress
   }
   c:run ("preferred-devices/prefer-profile", ev)
-  check ("no pisa una llamada en curso", ev:selected (), "headset-head-unit")
+  check ("does not override an ongoing call", ev:selected (), "headset-head-unit")
 end
 
 --------------------------------------------------------------------------
-print ("desmuteo al volver el Bluetooth")
+print ("unmute when bluetooth returns")
 do
   local wp = Fake.new {}
   wp.devices = { wp:device {
@@ -150,12 +155,62 @@ do
   } }
   local c = wp:load (SRC)
   c:run ("preferred-devices/unmute-on-bt-return", wp:node_added_event ())
-  check ("desmutea la ruta de salida", wp.route_mutes[1] and wp.route_mutes[1].index, 7)
-  check ("con mute = false", wp.route_mutes[1] and wp.route_mutes[1].mute, false)
-  check ("y no toca la de entrada", #wp.route_mutes, 1)
+  check ("unmutes the output route", wp.route_mutes[1] and wp.route_mutes[1].index, 7)
+  check ("with mute = false", wp.route_mutes[1] and wp.route_mutes[1].mute, false)
+  check ("and leaves the input route alone", #wp.route_mutes, 1)
+end
+
+--------------------------------------------------------------------------
+-- Regressions. The state file is documented as hand-editable, so it has to
+-- survive being edited badly.
+--------------------------------------------------------------------------
+print ("regression: hole in a hand-edited state")
+do
+  -- sink.0 and sink.2 with no sink.1. "saved-headset" is not connected now.
+  local wp = Fake.new { state = { ["sink.0"] = "speakers", ["sink.2"] = "saved-headset" } }
+  local c = wp:load (SRC)
+  local ev = select (c, wp, { kind = "audio.sink", nodes = sinks ("speakers") })
+  check ("keeps the entry after the hole", count (wp:preferred ("sink"), "saved-headset"), 1)
+  check ("and still picks correctly", ev:selected (), "speakers")
+end
+
+print ("regression: the stored order is respected")
+do
+  -- pairs() has no defined order in Lua, so the indices must be sorted
+  -- explicitly. With enough entries an unsorted load comes out scrambled.
+  local st, names = {}, {}
+  for i = 0, 7 do
+    st["sink." .. i] = "dev" .. i
+    names[#names + 1] = "dev" .. i
+  end
+  local wp = Fake.new { state = st }
+  local c = wp:load (SRC)
+  select (c, wp, { kind = "audio.sink", nodes = sinks (table.unpack (names)) })
+  check ("loads in index order", table.concat (wp:preferred ("sink"), ","),
+         table.concat (names, ","))
+end
+
+print ("regression: duplicates in the state")
+do
+  local wp = Fake.new { state = { ["sink.0"] = "a", ["sink.1"] = "b", ["sink.2"] = "a" } }
+  local c = wp:load (SRC)
+  select (c, wp, { kind = "audio.sink", nodes = sinks ("a", "b") })
+  check ("leaves no duplicates", count (wp:preferred ("sink"), "a"), 1)
+end
+
+print ("regression: the list is bounded")
+do
+  local wp = Fake.new {}
+  local c = wp:load (SRC)
+  for i = 1, 60 do
+    select (c, wp, { kind = "audio.sink", nodes = sinks ("dev" .. i) })
+  end
+  local l = wp:preferred ("sink")
+  check ("history is capped", #l <= 32, true)
+  check ("and the present device is never dropped", count (l, "dev60"), 1)
 end
 
 --------------------------------------------------------------------------
 print ()
-print (string.format ("%d pruebas, %d fallos", pass + fail, fail))
+print (string.format ("%d tests, %d failures", pass + fail, fail))
 os.exit (fail == 0 and 0 or 1)

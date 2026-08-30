@@ -1,7 +1,7 @@
 #!/bin/sh
-# Los .conf de WirePlumber son SPA-JSON y no hay validador independiente.
-# Al menos se comprueba que los delimitadores esten balanceados: un archivo mal
-# formado impide que WirePlumber arranque, y te quedas sin audio.
+# WirePlumber .conf files are SPA-JSON and there is no standalone validator.
+# At least check the delimiters balance: a malformed file stops WirePlumber
+# from starting, and you lose audio.
 set -e
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 status=0
@@ -12,7 +12,7 @@ p = sys.argv[1]
 s = open(p).read()
 for a, b in (("{", "}"), ("[", "]")):
     if s.count(a) != s.count(b):
-        sys.exit("%s: %s%s desbalanceados (%d vs %d)"
+        sys.exit("%s: %s%s unbalanced (%d vs %d)"
                  % (p, a, b, s.count(a), s.count(b)))
 print("  ok   %s" % p.split("/")[-1])
 ' "$f" || status=1
