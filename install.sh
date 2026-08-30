@@ -70,6 +70,21 @@ sleep 2
 
 if systemctl --user is-active --quiet wireplumber; then
     echo "  wireplumber OK"
+    # A value saved in sm-settings beats any .conf -- precedence is
+    # saved > config > schema default -- so 92-no-automute.conf on its own
+    # cannot undo one. Clear it, and apply the value straight away so this
+    # needs no second restart. Only a saved 'true' is touched: a saved 'false'
+    # already agrees with the config.
+    if command -v wpctl >/dev/null 2>&1; then
+        for key in device.routes.mute-on-alsa-playback-removed \
+                   device.routes.mute-on-bluetooth-playback-removed; do
+            if wpctl settings "$key" 2>/dev/null | grep -q "(Saved: true)"; then
+                wpctl settings "$key" --delete >/dev/null 2>&1 || true
+                wpctl settings "$key" false >/dev/null 2>&1 || true
+                echo "  cleared the saved auto-mute override: $key"
+            fi
+        done
+    fi
     [ "$kept" -eq 1 ] && echo "  review the .new files above for new options."
     echo
     echo "  If you had Bluetooth headphones connected, reconnect them:"

@@ -57,9 +57,12 @@ simply "next one present".
   whatever the stored-history score happens to rank highest.
 - **Prefers the best available device profile** (for example SBC-XQ over plain
   SBC), even when WirePlumber has already stored a degraded one.
-- **Undoes the protective mute when Bluetooth returns.**
-  `mute-on-bluetooth-playback-removed` mutes everything when Bluetooth goes
-  away and never unmutes; if Bluetooth is back, that condition is over.
+- **Never auto-mutes on disconnect.** macOS moves playback to the next present
+  device and keeps playing. WirePlumber's `automute-alsa-routes` instead mutes
+  every ALSA output when a playing sink disappears, and never unmutes, which
+  contradicts the point of the component. It is turned off here. If you put it
+  back, the component still undoes the mute when Bluetooth returns: if
+  Bluetooth is back, the condition it guards against is over.
 
 It runs **inside the WirePlumber process**: no extra processes, no polling.
 
@@ -115,6 +118,39 @@ Lua patterns, matched against `node.name`. Matching devices stay selectable by
 hand and usable as a fallback; they just do not become the default merely by
 showing up. Without this, a remote host rebooting yanks the audio out of your
 headphones.
+
+### Auto-mute on disconnect
+
+`92-no-automute.conf` disables both auto-mute settings:
+
+```
+wireplumber.settings = {
+  device.routes.mute-on-alsa-playback-removed = false
+  device.routes.mute-on-bluetooth-playback-removed = false
+}
+```
+
+Both already default to false upstream; they are stated explicitly so a distro
+that enables them in its own `.conf` does not silently change the behaviour.
+
+The reason the protection is not wanted: WirePlumber stores volume and mute
+**per route** (`~/.local/state/wireplumber/default-routes`), so falling back to
+the speakers plays at the speakers' own volume, not at the headphone volume.
+It also cannot tell the case it exists for from the ordinary one -- powering a
+device off and walking out of range both arrive from BlueZ as `connection
+terminated unexpectedly`.
+
+Setting precedence is **saved > config > schema default**: a value written into
+`~/.local/state/wireplumber/sm-settings` (by `wpctl settings --save`, or by a
+desktop that saves it for you) wins over any `.conf`. `install.sh` therefore
+clears a saved `true` for these two keys. To check or undo by hand:
+
+```
+wpctl settings device.routes.mute-on-bluetooth-playback-removed
+wpctl settings device.routes.mute-on-bluetooth-playback-removed --delete
+```
+
+Delete `92-no-automute.conf` to get the protection back.
 
 ### Preferred device profiles
 
@@ -177,6 +213,10 @@ Things that each cost a real failure and are not documented anywhere obvious:
 - **You must write `default.configured` with the winner.** Otherwise picking by
   hand the device that was already configured changes no metadata, emits no
   event, and the click does nothing.
+- **A saved setting beats every `.conf`.** Precedence is
+  saved > config > schema default, and `wpctl settings <key>` reports it as
+  `Value: x (Saved: y)`. A setting shipped in a config file is therefore not
+  enough to correct a machine where something once ran `--save`.
 - The Lua sandbox exposes neither `io` nor `os`; use `State` to persist.
 - `log:info` is invisible at the default log level. Use `log:warning` to debug.
 

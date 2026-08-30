@@ -10,7 +10,8 @@ STATE="${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber/audio-preferred-devices
 
 rm -f "$SCRIPTS/preferred-devices.lua" \
       "$CONFD/90-preferred-devices.conf" "$CONFD/90-preferred-devices.conf.new" \
-      "$CONFD/91-bt-profile.conf" "$CONFD/91-bt-profile.conf.new"
+      "$CONFD/91-bt-profile.conf" "$CONFD/91-bt-profile.conf.new" \
+      "$CONFD/92-no-automute.conf" "$CONFD/92-no-automute.conf.new"
 
 if [ "${1:-}" = "--purge" ]; then
     rm -f "$STATE"
