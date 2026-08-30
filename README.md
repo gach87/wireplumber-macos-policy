@@ -119,6 +119,27 @@ hand and usable as a fallback; they just do not become the default merely by
 showing up. Without this, a remote host rebooting yanks the audio out of your
 headphones.
 
+The same key solves a trap anyone with Bluetooth headphones will hit:
+
+```
+preferred-devices.no-arrival = [ "^bluez_input%." ]
+```
+
+Connect a headset and its microphone becomes the default input as well. From
+then on any application that opens the microphone triggers WirePlumber's
+autoswitch, and the headset drops from A2DP to HFP -- your music becomes mono
+until that application lets go. Joining a call should not degrade playback.
+
+The pattern matches inputs only, so the headset still wins the **output** on
+arrival, which is the behaviour you want. Picking its microphone by hand keeps
+working: a manual choice moves to the front whether or not the device is listed
+here.
+
+Note that editing the state file is not enough to demote a device that is
+already the default. WirePlumber's stored `default.configured.<type>` is
+re-proposed by the native hooks at the manual-choice priority, and the
+component honours it. Use `wpctl set-default <id>` to change the choice itself.
+
 ### Auto-mute on disconnect
 
 `92-no-automute.conf` disables both auto-mute settings:
